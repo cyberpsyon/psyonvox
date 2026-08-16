@@ -61,9 +61,8 @@ consistent across the two.
 
 ## Deploy
 
-Static site — deploy `dist/` anywhere. A [`netlify.toml`](netlify.toml) is
-included (`npm run build` → publish `dist/`, SPA redirect). Candidate URL:
-`voice.cyberpsyon.com`.
+`npm run build` produces a static `dist/` — host it on any static host
+(Cloudflare Pages, Netlify, GitHub Pages, etc.). No server required.
 
 ## Privacy
 

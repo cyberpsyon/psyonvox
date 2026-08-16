@@ -1,0 +1,12 @@
+# Cloudflare Pages configuration for PsyonVox.
+#
+# Pure static site — all TTS runs in the browser, so no Workers AI / KV
+# bindings (unlike certrx). The Kokoro model and onnxruntime wasm are fetched
+# from CDN at runtime, keeping every deployed file well under the 25 MB
+# per-file Pages limit.
+#
+# Deploy:  npm run build  &&  npx wrangler pages deploy dist --project-name psyonvox
+
+name = "psyonvox"
+compatibility_date = "2026-05-01"
+pages_build_output_dir = "dist"
