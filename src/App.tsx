@@ -10,14 +10,24 @@ import {
 } from "./lib/device";
 import { Reader } from "./components/Reader";
 import { PlayerBar } from "./components/PlayerBar";
+import { Settings } from "./components/Settings";
+import type { Block } from "./lib/extract";
+import {
+  DEFAULT_SPEECH_OPTIONS,
+  mergeDict,
+  toSpoken,
+  type SpeechOptions,
+} from "./lib/pronounce";
 import {
   addBookmark,
   fileIdentity,
   getProgress,
+  getSetting,
   listBookmarks,
   recentFiles,
   removeBookmark,
   saveProgress,
+  setSetting,
   type Bookmark,
   type FileMeta,
 } from "./lib/store";
@@ -33,6 +43,7 @@ export default function App() {
   const [pref, setPref] = useState<DevicePreference>("auto");
   const [fileName, setFileName] = useState("");
   const [docText, setDocText] = useState("");
+  const [blocks, setBlocks] = useState<Block[]>([]);
   const [extracting, setExtracting] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   const [scanned, setScanned] = useState(false);
@@ -47,6 +58,37 @@ export default function App() {
   const [recent, setRecent] = useState<FileMeta[]>([]);
   const metered = useMemo(() => isMetered(), []);
 
+  // speech settings (persisted)
+  const [speechOpts, setSpeechOpts] = useState<SpeechOptions>(DEFAULT_SPEECH_OPTIONS);
+  const [includeCode, setIncludeCode] = useState(false);
+  const [userTerms, setUserTerms] = useState<Record<string, string>>({});
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+
+  useEffect(() => {
+    void Promise.all([
+      getSetting<SpeechOptions>("speechOpts", DEFAULT_SPEECH_OPTIONS),
+      getSetting<boolean>("includeCode", false),
+      getSetting<Record<string, string>>("userTerms", {}),
+    ]).then(([o, c, t]) => {
+      setSpeechOpts(o);
+      setIncludeCode(c);
+      setUserTerms(t);
+      setSettingsLoaded(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (settingsLoaded) void setSetting("speechOpts", speechOpts);
+  }, [speechOpts, settingsLoaded]);
+  useEffect(() => {
+    if (settingsLoaded) void setSetting("includeCode", includeCode);
+  }, [includeCode, settingsLoaded]);
+  useEffect(() => {
+    if (settingsLoaded) void setSetting("userTerms", userTerms);
+  }, [userTerms, settingsLoaded]);
+
+  const dict = useMemo(() => mergeDict(userTerms), [userTerms]);
+
   // Real capability probe — navigator.gpu can exist without a working adapter.
   useEffect(() => {
     let alive = true;
@@ -57,7 +99,11 @@ export default function App() {
   }, []);
 
   const resolved = resolvePair(pref, webgpu);
-  const segments = useMemo(() => segment(docText), [docText]);
+  const segments = useMemo(() => segment(blocks), [blocks]);
+  const spoken = useMemo(
+    () => segments.map((s) => toSpoken(s, dict, speechOpts, includeCode)),
+    [segments, dict, speechOpts, includeCode],
+  );
   const canPlay = tts.currentSentence >= 0 || tts.durations.some((d) => d != null);
   const wordCount = useMemo(
     () => (docText ? docText.replace(/\s+/g, " ").trim().split(" ").length : 0),
@@ -82,6 +128,7 @@ export default function App() {
         extractFile(file),
       ]);
       setDocText(res.text);
+      setBlocks(res.blocks);
       setFileId(id);
       setFileMeta({ size: file.size, hash });
       if (res.likelyScanned) setScanned(true);
@@ -92,6 +139,7 @@ export default function App() {
     } catch (err) {
       setFileError((err as Error).message ?? "Could not read that file.");
       setDocText("");
+      setBlocks([]);
     } finally {
       setExtracting(false);
     }
@@ -145,6 +193,17 @@ export default function App() {
     },
     [fileId],
   );
+
+  const onAddTerm = useCallback((term: string, say: string) => {
+    setUserTerms((prev) => ({ ...prev, [term]: say }));
+  }, []);
+  const onRemoveTerm = useCallback((term: string) => {
+    setUserTerms((prev) => {
+      const next = { ...prev };
+      delete next[term];
+      return next;
+    });
+  }, []);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
@@ -347,11 +406,24 @@ export default function App() {
           </section>
         )}
 
+        {/* Settings */}
+        {docText && !scanned && (
+          <Settings
+            opts={speechOpts}
+            onOpts={setSpeechOpts}
+            includeCode={includeCode}
+            onIncludeCode={setIncludeCode}
+            userTerms={userTerms}
+            onAddTerm={onAddTerm}
+            onRemoveTerm={onRemoveTerm}
+          />
+        )}
+
         {/* Read-aloud trigger */}
         {docText && !scanned && (
           <div className="mb-4 flex flex-wrap items-center gap-3">
             <button
-              onClick={() => tts.speak(segments, tts.voice)}
+              onClick={() => tts.speak(segments, spoken, tts.voice)}
               disabled={tts.phase !== "ready" || tts.generating}
               className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-bg transition-colors hover:bg-accent-bright disabled:opacity-50"
             >
@@ -359,7 +431,9 @@ export default function App() {
             </button>
             {resumeInfo && tts.phase === "ready" && !tts.generating && (
               <button
-                onClick={() => tts.speak(segments, tts.voice, resumeInfo.lastIndex)}
+                onClick={() =>
+                  tts.speak(segments, spoken, tts.voice, resumeInfo.lastIndex)
+                }
                 className="rounded-md border border-accent px-4 py-2 text-sm font-medium text-accent transition-colors hover:bg-accent hover:text-bg"
               >
                 ⤾ Resume at sentence {resumeInfo.lastIndex + 1}

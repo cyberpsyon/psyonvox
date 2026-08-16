@@ -255,9 +255,13 @@ export function useTts() {
     send({ type: "init", modelId: MODEL_ID, device: pair.device, dtype: pair.dtype });
   }, []);
 
-  /** Begin reading a pre-segmented document, optionally from `startIndex`. */
+  /**
+   * Begin reading a pre-segmented document. `spoken` is the per-segment text
+   * actually sent to Kokoro (pronunciation-normalized, code/tables announced);
+   * `segments` drives the display and must be the same length.
+   */
   const speak = useCallback(
-    (segments: Segment[], voiceId: string, startIndex = 0) => {
+    (segments: Segment[], spoken: string[], voiceId: string, startIndex = 0) => {
       const st = iRef.current;
       if (!st || phase !== "ready" || segments.length === 0) return;
       send({ type: "cancel" });
@@ -281,7 +285,7 @@ export function useTts() {
       send({
         type: "generate",
         jobId,
-        sentences: segments.map((s) => s.text),
+        sentences: spoken,
         voice: voiceId,
         startIndex,
       });

@@ -4,7 +4,7 @@ import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 // corrupting existing users' saved state. Bump DB_VERSION + add an upgrade
 // branch; never mutate an existing store's shape in place.
 const DB_NAME = "psyonvox";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export type FileMeta = {
   fileId: string; // name + size + content hash — survives renames sensibly
@@ -31,6 +31,7 @@ interface PsyonVoxDB extends DBSchema {
     value: Bookmark;
     indexes: { byFile: string };
   };
+  settings: { key: string; value: unknown };
 }
 
 let dbPromise: Promise<IDBPDatabase<PsyonVoxDB>> | null = null;
@@ -46,6 +47,9 @@ function db() {
             autoIncrement: true,
           });
           bm.createIndex("byFile", "fileId");
+        }
+        if (oldVersion < 2) {
+          database.createObjectStore("settings"); // key/value: pronunciations, toggles
         }
       },
     });
@@ -90,4 +94,13 @@ export async function addBookmark(bm: Bookmark): Promise<void> {
 
 export async function removeBookmark(id: number): Promise<void> {
   await (await db()).delete("bookmarks", id);
+}
+
+export async function getSetting<T>(key: string, fallback: T): Promise<T> {
+  const v = await (await db()).get("settings", key);
+  return v === undefined ? fallback : (v as T);
+}
+
+export async function setSetting(key: string, value: unknown): Promise<void> {
+  await (await db()).put("settings", value, key);
 }
