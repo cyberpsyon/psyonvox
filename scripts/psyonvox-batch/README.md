@@ -20,9 +20,12 @@ Silicon, and CPU otherwise (fine for the 82M model).
 
 ## Quickstart
 
+Requires **Python 3.10–3.12** (the `kokoro` package doesn't support 3.13 yet).
+
 ```bash
 cd scripts/psyonvox-batch
-python3 -m venv .venv && source .venv/bin/activate
+python3.12 -m venv .venv && source .venv/bin/activate   # use a 3.10–3.12 interpreter
+pip install --upgrade pip
 pip install -r requirements.txt
 python psyonvox_batch.py /path/to/study-materials --out ./audiobooks --voice af_heart
 ```
