@@ -3,38 +3,34 @@ import type { Chunk, FromWorker, ToWorker } from "../lib/types";
 import { approxDownloadMB, type EnginePair } from "../lib/device";
 import { DEFAULT_VOICE } from "../lib/voices";
 import { sectionJump, type Segment } from "../lib/segment";
+import { minSpeakIndex, type Step } from "../lib/schedule";
 
 const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
 
 export type Phase = "idle" | "loading-model" | "ready" | "error";
-
-export type DownloadState = {
-  progress: number; // 0..1
-  file: string;
-  totalMB: number;
-};
+export type DownloadState = { progress: number; file: string; totalMB: number };
 
 type Internal = {
-  els: [HTMLAudioElement, HTMLAudioElement]; // gapless double-buffer
+  els: [HTMLAudioElement, HTMLAudioElement];
   active: 0 | 1;
   urls: (string | undefined)[];
   durations: number[];
   count: number;
-  generationDone: boolean;
+  segments: Segment[];
+  schedule: Step[];
+  stepPtr: number;
   playingIndex: number;
   waitingFor: number | null;
-  autoplay: boolean;
   speed: number;
-  segments: Segment[];
 };
 
 export function useTts() {
   const workerRef = useRef<Worker | null>(null);
   const jobRef = useRef(0);
   const iRef = useRef<Internal | null>(null);
+  const apiRef = useRef<{ goToStep: (p: number) => void }>({ goToStep: () => {} });
   const attemptRef = useRef<EnginePair | null>(null);
   const triedFallbackRef = useRef(false);
-  const playIndexRef = useRef<(i: number) => void>(() => {});
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -62,19 +58,27 @@ export function useTts() {
       urls: [],
       durations: [],
       count: 0,
-      generationDone: false,
+      segments: [],
+      schedule: [],
+      stepPtr: -1,
       playingIndex: -1,
       waitingFor: null,
-      autoplay: false,
       speed: 1,
-      segments: [],
     };
     iRef.current = st;
 
     const activeEl = () => st.els[st.active];
     const idleEl = () => st.els[st.active === 0 ? 1 : 0];
-    const preloadNext = (i: number) => {
-      const url = st.urls[i + 1];
+
+    const nextSpeakStep = (afterPtr: number): number => {
+      for (let p = afterPtr + 1; p < st.schedule.length; p++) return p;
+      return -1;
+    };
+
+    const preloadNext = () => {
+      const p = nextSpeakStep(st.stepPtr);
+      if (p < 0) return;
+      const url = st.urls[st.schedule[p].index];
       if (url) {
         const el = idleEl();
         if (el.src !== url) {
@@ -84,70 +88,62 @@ export function useTts() {
       }
     };
 
-    const playIndex = (i: number) => {
-      if (i < 0 || i >= st.count) return;
-      const url = st.urls[i];
-      st.playingIndex = i;
+    const playSeg = (index: number) => {
+      const url = st.urls[index];
+      st.playingIndex = index;
       if (!url) {
-        // Audio for this index isn't generated yet — show the target, wait.
-        st.waitingFor = i;
+        st.waitingFor = index;
         setBuffering(true);
-        setCurrentSentence(i);
+        setIsPlaying(true);
+        setCurrentSentence(index);
         setCurrentTime(0);
         return;
       }
       st.waitingFor = null;
       setBuffering(false);
+      if (idleEl().src === url) st.active = st.active === 0 ? 1 : 0; // gapless flip
       const el = activeEl();
-      el.src = url;
+      if (el.src !== url) el.src = url;
       el.playbackRate = st.speed;
       el.preservesPitch = true;
-      setCurrentSentence(i);
+      setCurrentSentence(index);
       setCurrentTime(0);
+      setIsPlaying(true);
       void el.play().catch(() => setIsPlaying(false));
-      preloadNext(i);
+      preloadNext();
     };
-    playIndexRef.current = playIndex;
 
-    const advance = () => {
-      const next = st.playingIndex + 1;
-      if (next < st.count && st.urls[next]) {
-        // Gapless: the idle element was preloaded with `next` — flip to it.
-        st.active = st.active === 0 ? 1 : 0;
-        const el = activeEl();
-        if (el.src !== st.urls[next]) el.src = st.urls[next]!;
-        el.playbackRate = st.speed;
-        el.preservesPitch = true;
-        st.playingIndex = next;
-        st.waitingFor = null;
-        setCurrentSentence(next);
-        setCurrentTime(0);
-        void el.play().catch(() => setIsPlaying(false));
-        preloadNext(next);
-      } else if (st.generationDone && next >= st.count) {
+    const executeStep = () => {
+      if (st.stepPtr < 0 || st.stepPtr >= st.schedule.length) {
         setIsPlaying(false);
         setCurrentSentence(-1);
         setCurrentTime(0);
-      } else {
-        st.waitingFor = next;
-        setBuffering(true);
+        st.playingIndex = -1;
+        return;
       }
+      playSeg(st.schedule[st.stepPtr].index);
     };
+
+    const stepForward = () => {
+      st.stepPtr++;
+      executeStep();
+    };
+
+    const goToStep = (p: number) => {
+      st.stepPtr = p;
+      executeStep();
+    };
+    apiRef.current = { goToStep };
 
     els.forEach((el) => {
       el.addEventListener("ended", () => {
-        if (el === activeEl()) advance();
-      });
-      el.addEventListener("play", () => setIsPlaying(true));
-      el.addEventListener("pause", () => {
-        if (el === activeEl() && !el.ended) setIsPlaying(false);
+        if (el === activeEl()) stepForward();
       });
     });
 
-    const worker = new Worker(
-      new URL("../worker/tts.worker.ts", import.meta.url),
-      { type: "module" },
-    );
+    const worker = new Worker(new URL("../worker/tts.worker.ts", import.meta.url), {
+      type: "module",
+    });
     workerRef.current = worker;
 
     worker.addEventListener("message", (e: MessageEvent<FromWorker>) => {
@@ -205,18 +201,12 @@ export function useTts() {
             copy[c.index] = c.duration;
             return copy;
           });
-          if (st.autoplay && st.playingIndex === -1) {
-            playIndex(c.index); // first generated chunk starts playback
-          } else if (st.waitingFor === c.index) {
-            playIndex(c.index); // resume from a buffer underrun
-          } else if (c.index === st.playingIndex + 1) {
-            preloadNext(st.playingIndex); // arrived late — preload for gapless flip
-          }
+          if (st.waitingFor === c.index) playSeg(c.index);
+          else preloadNext();
           break;
         }
         case "done":
           if (msg.jobId !== jobRef.current) return;
-          st.generationDone = true;
           setGenerating(false);
           break;
       }
@@ -256,14 +246,21 @@ export function useTts() {
   }, []);
 
   /**
-   * Begin reading a pre-segmented document. `spoken` is the per-segment text
-   * actually sent to Kokoro (pronunciation-normalized, code/tables announced);
-   * `segments` drives the display and must be the same length.
+   * Begin reading. `schedule` defines playback order; `spoken` is the per-segment
+   * normalized text sent to Kokoro; `segments` drives display. `startStep`
+   * resumes at a schedule step.
    */
   const speak = useCallback(
-    (segments: Segment[], spoken: string[], voiceId: string, startIndex = 0) => {
+    (
+      segments: Segment[],
+      spoken: string[],
+      schedule: Step[],
+      voiceId: string,
+      startStep = 0,
+    ) => {
       const st = iRef.current;
-      if (!st || phase !== "ready" || segments.length === 0) return;
+      if (!st || phase !== "ready" || segments.length === 0 || schedule.length === 0)
+        return;
       send({ type: "cancel" });
       st.els.forEach((el) => el.pause());
       st.urls.forEach((u) => u && URL.revokeObjectURL(u));
@@ -271,24 +268,26 @@ export function useTts() {
       st.durations = new Array(segments.length);
       st.count = segments.length;
       st.segments = segments;
-      st.generationDone = false;
+      st.schedule = schedule;
+      st.stepPtr = startStep - 1;
       st.playingIndex = -1;
       st.waitingFor = null;
       st.active = 0;
-      st.autoplay = true;
       setDurations([]);
       setCurrentSentence(-1);
       setCurrentTime(0);
       setBuffering(true);
       setGenerating(true);
       const jobId = ++jobRef.current;
+      const genStart = minSpeakIndex(schedule.slice(Math.max(0, startStep)));
       send({
         type: "generate",
         jobId,
         sentences: spoken,
         voice: voiceId,
-        startIndex,
+        startIndex: genStart,
       });
+      apiRef.current.goToStep(Math.max(0, startStep));
     },
     [phase],
   );
@@ -297,13 +296,19 @@ export function useTts() {
     const st = iRef.current;
     if (!st) return;
     const el = st.els[st.active];
-    if (el.src) void el.play().catch(() => {});
-    else if (st.count > 0) playIndexRef.current(Math.max(0, st.playingIndex));
+    if (el.src) {
+      setIsPlaying(true);
+      void el.play().catch(() => setIsPlaying(false));
+    } else if (st.schedule.length > 0) {
+      apiRef.current.goToStep(Math.max(0, st.stepPtr));
+    }
   }, []);
 
   const pause = useCallback(() => {
     const st = iRef.current;
-    if (st) st.els[st.active].pause();
+    if (!st) return;
+    st.els[st.active].pause();
+    setIsPlaying(false);
   }, []);
 
   const toggle = useCallback(() => {
@@ -311,41 +316,65 @@ export function useTts() {
     else play();
   }, [isPlaying, play, pause]);
 
-  const seekToSentence = useCallback((i: number) => {
-    playIndexRef.current(i);
+  const seekToSentence = useCallback((segIndex: number) => {
+    const st = iRef.current;
+    if (!st) return;
+    let best = -1;
+    for (let p = 0; p < st.schedule.length; p++) {
+      if (st.schedule[p].index === segIndex) {
+        best = p;
+        break;
+      }
+      if (st.schedule[p].index <= segIndex) best = p;
+    }
+    if (best >= 0) apiRef.current.goToStep(best);
   }, []);
 
   const nextSentence = useCallback(() => {
     const st = iRef.current;
-    if (st) playIndexRef.current(Math.max(0, st.playingIndex) + 1);
+    if (st && st.stepPtr + 1 < st.schedule.length) apiRef.current.goToStep(st.stepPtr + 1);
   }, []);
 
   const prevSentence = useCallback(() => {
     const st = iRef.current;
-    if (st) playIndexRef.current(Math.max(0, st.playingIndex - 1));
+    if (st) apiRef.current.goToStep(Math.max(0, st.stepPtr - 1));
   }, []);
 
-  const jumpSection = useCallback((dir: 1 | -1) => {
-    const st = iRef.current;
-    if (!st) return;
-    const target = sectionJump(st.segments, Math.max(0, st.playingIndex), dir);
-    playIndexRef.current(target);
-  }, []);
+  const jumpSection = useCallback(
+    (dir: 1 | -1) => {
+      const st = iRef.current;
+      if (!st) return;
+      const target = sectionJump(st.segments, Math.max(0, st.playingIndex), dir);
+      seekToSentence(target);
+    },
+    [seekToSentence],
+  );
 
-  /** ~10-second rewind, landing on a sentence boundary (per-sentence clips). */
   const rewind = useCallback((seconds = 10) => {
     const st = iRef.current;
     if (!st || st.playingIndex < 0) return;
     let acc = st.els[st.active].currentTime;
-    let i = st.playingIndex;
-    while (i > 0 && acc < seconds) {
-      i--;
-      acc += st.durations[i] ?? 0;
+    let p = st.stepPtr;
+    while (acc < seconds && p > 0) {
+      p--;
+      acc += st.durations[st.schedule[p].index] ?? 0;
     }
-    playIndexRef.current(i);
+    apiRef.current.goToStep(p);
   }, []);
 
-  // ---- Media Session: lock-screen / headphone controls ----
+  const setSpeed = useCallback((x: number) => {
+    setSpeedState(x);
+    const st = iRef.current;
+    if (st) {
+      st.speed = x;
+      st.els.forEach((el) => {
+        el.playbackRate = x;
+        el.preservesPitch = true;
+      });
+    }
+  }, []);
+
+  // ---- Media Session ----
   useEffect(() => {
     if (!("mediaSession" in navigator)) return;
     const ms = navigator.mediaSession;
@@ -366,18 +395,6 @@ export function useTts() {
       navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
     }
   }, [isPlaying]);
-
-  const setSpeed = useCallback((x: number) => {
-    setSpeedState(x);
-    const st = iRef.current;
-    if (st) {
-      st.speed = x;
-      st.els.forEach((el) => {
-        el.playbackRate = x;
-        el.preservesPitch = true;
-      });
-    }
-  }, []);
 
   return {
     phase,

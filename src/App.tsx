@@ -12,6 +12,7 @@ import { Reader } from "./components/Reader";
 import { PlayerBar } from "./components/PlayerBar";
 import { Settings } from "./components/Settings";
 import type { Block } from "./lib/extract";
+import { linearSchedule } from "./lib/schedule";
 import {
   DEFAULT_SPEECH_OPTIONS,
   mergeDict,
@@ -104,6 +105,7 @@ export default function App() {
     () => segments.map((s) => toSpoken(s, dict, speechOpts, includeCode)),
     [segments, dict, speechOpts, includeCode],
   );
+  const schedule = useMemo(() => linearSchedule(segments.length), [segments.length]);
   const canPlay = tts.currentSentence >= 0 || tts.durations.some((d) => d != null);
   const wordCount = useMemo(
     () => (docText ? docText.replace(/\s+/g, " ").trim().split(" ").length : 0),
@@ -423,7 +425,7 @@ export default function App() {
         {docText && !scanned && (
           <div className="mb-4 flex flex-wrap items-center gap-3">
             <button
-              onClick={() => tts.speak(segments, spoken, tts.voice)}
+              onClick={() => tts.speak(segments, spoken, schedule, tts.voice)}
               disabled={tts.phase !== "ready" || tts.generating}
               className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-bg transition-colors hover:bg-accent-bright disabled:opacity-50"
             >
@@ -432,7 +434,13 @@ export default function App() {
             {resumeInfo && tts.phase === "ready" && !tts.generating && (
               <button
                 onClick={() =>
-                  tts.speak(segments, spoken, tts.voice, resumeInfo.lastIndex)
+                  tts.speak(
+                    segments,
+                    spoken,
+                    linearSchedule(segments.length),
+                    tts.voice,
+                    resumeInfo.lastIndex,
+                  )
                 }
                 className="rounded-md border border-accent px-4 py-2 text-sm font-medium text-accent transition-colors hover:bg-accent hover:text-bg"
               >
