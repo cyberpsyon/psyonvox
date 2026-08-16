@@ -11,8 +11,9 @@ import {
 import { Reader } from "./components/Reader";
 import { PlayerBar } from "./components/PlayerBar";
 import { Settings } from "./components/Settings";
-import type { Block } from "./lib/extract";
+import { ACCEPT, type Block } from "./lib/extract";
 import { linearSchedule } from "./lib/schedule";
+import type { ExportMode } from "./lib/types";
 import {
   DEFAULT_SPEECH_OPTIONS,
   mergeDict,
@@ -107,6 +108,25 @@ export default function App() {
   );
   const schedule = useMemo(() => linearSchedule(segments.length), [segments.length]);
   const canPlay = tts.currentSentence >= 0 || tts.durations.some((d) => d != null);
+
+  // export config
+  const [bitrate, setBitrate] = useState(96);
+  const [exportMode, setExportMode] = useState<ExportMode>("single");
+  const docTitle = useMemo(() => fileName.replace(/\.[^.]+$/, "") || "psyonvox", [fileName]);
+  const sections = useMemo(() => {
+    const out: { startIndex: number; title: string }[] = [];
+    let last = -1;
+    for (const s of segments) {
+      if (s.section !== last) {
+        last = s.section;
+        out.push({
+          startIndex: s.index,
+          title: s.kind === "heading" ? s.text : `Section ${s.section + 1}`,
+        });
+      }
+    }
+    return out;
+  }, [segments]);
   const wordCount = useMemo(
     () => (docText ? docText.replace(/\s+/g, " ").trim().split(" ").length : 0),
     [docText],
@@ -353,16 +373,15 @@ export default function App() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".pdf,.md,.markdown,.txt"
+            accept={ACCEPT}
             className="hidden"
             onChange={(e) => {
               const f = e.target.files?.[0];
               if (f) void onFile(f);
             }}
           />
-          <p className="mb-3 text-sm text-muted">
-            Drop a <span className="text-text">PDF</span> or{" "}
-            <span className="text-text">Markdown</span> file here, or
+          <p className="mb-4 text-base text-text">
+            Drop a document here to read it aloud
           </p>
           <button
             onClick={() => fileInputRef.current?.click()}
@@ -370,6 +389,9 @@ export default function App() {
           >
             Choose a file
           </button>
+          <p className="mt-4 text-xs text-muted">
+            PDF · Markdown · TXT · Word · PowerPoint · EPUB
+          </p>
           {fileName && (
             <p className="mt-3 font-mono text-xs text-muted">
               {extracting ? "Extracting… " : ""}
@@ -462,6 +484,101 @@ export default function App() {
               sentences
             </span>
           </div>
+        )}
+
+        {/* Export to MP3 */}
+        {docText && !scanned && (
+          <section className="mb-6 rounded-lg border border-border bg-surface/60 p-4">
+            <h3 className="mb-3 font-mono text-xs uppercase tracking-wide text-muted">
+              Export to MP3
+            </h3>
+            <div className="flex flex-wrap items-end gap-4">
+              <label className="flex flex-col gap-1 text-sm">
+                <span className="text-muted">Format</span>
+                <select
+                  value={exportMode}
+                  onChange={(e) => setExportMode(e.target.value as ExportMode)}
+                  disabled={tts.exporting}
+                  className="rounded-md border border-border bg-bg px-2 py-1.5 outline-none focus:border-accent disabled:opacity-50"
+                >
+                  <option value="single">Single MP3 (whole document)</option>
+                  <option value="chapters">Single MP3 + chapter markers</option>
+                  <option value="zip">One MP3 per section (ZIP)</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                <span className="text-muted">Bitrate</span>
+                <select
+                  value={bitrate}
+                  onChange={(e) => setBitrate(Number(e.target.value))}
+                  disabled={tts.exporting}
+                  className="rounded-md border border-border bg-bg px-2 py-1.5 outline-none focus:border-accent disabled:opacity-50"
+                >
+                  <option value={64}>64 kbps (small, fine for voice)</option>
+                  <option value={96}>96 kbps</option>
+                  <option value={128}>128 kbps</option>
+                </select>
+              </label>
+              {tts.exporting ? (
+                <button
+                  onClick={tts.cancelExport}
+                  className="rounded-md border border-red-400/50 px-4 py-2 text-sm font-medium text-red-400 transition-colors hover:bg-red-400/10"
+                >
+                  Cancel
+                </button>
+              ) : (
+                <button
+                  onClick={() =>
+                    tts.exportAudio(spoken, tts.voice, {
+                      bitrate,
+                      mode: exportMode,
+                      sections,
+                      docTitle,
+                    })
+                  }
+                  disabled={tts.phase !== "ready" || tts.generating}
+                  className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-bg transition-colors hover:bg-accent-bright disabled:opacity-50"
+                >
+                  Export
+                </button>
+              )}
+            </div>
+
+            {tts.exporting && tts.exportProgress && (
+              <div className="mt-4">
+                <div className="mb-1 flex justify-between font-mono text-xs text-muted">
+                  <span>
+                    Generating audio · {tts.exportProgress.done}/
+                    {tts.exportProgress.total} sentences
+                  </span>
+                  <span>
+                    {Math.round(
+                      (tts.exportProgress.done / Math.max(1, tts.exportProgress.total)) * 100,
+                    )}
+                    %
+                  </span>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-bg">
+                  <div
+                    className="h-full rounded-full bg-accent transition-[width] duration-200"
+                    style={{
+                      width: `${Math.round(
+                        (tts.exportProgress.done / Math.max(1, tts.exportProgress.total)) * 100,
+                      )}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            <p className="mt-3 text-xs text-muted">
+              {exportMode === "chapters"
+                ? "Chapter markers (ID3 CHAP) are honored by some players and ignored by others — use the per-section ZIP if your player skips them."
+                : exportMode === "zip"
+                  ? "One MP3 per detected section, bundled in a ZIP — the always-works way to get chapters."
+                  : "Regenerates the whole document as one MP3 at full speed (independent of the player)."}
+            </p>
+          </section>
         )}
 
         {/* Bookmarks */}

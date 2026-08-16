@@ -4,8 +4,27 @@ import { approxDownloadMB, type EnginePair } from "../lib/device";
 import { DEFAULT_VOICE } from "../lib/voices";
 import { sectionJump, type Segment } from "../lib/segment";
 import { minSpeakIndex, type Step } from "../lib/schedule";
+import type { ExportMode } from "../lib/types";
 
 const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
+
+export type ExportOptions = {
+  bitrate: number;
+  mode: ExportMode;
+  sections: { startIndex: number; title: string }[];
+  docTitle: string;
+};
+
+function triggerDownload(data: ArrayBuffer, mime: string, filename: string) {
+  const url = URL.createObjectURL(new Blob([data], { type: mime }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
 
 export type Phase = "idle" | "loading-model" | "ready" | "error";
 export type DownloadState = { progress: number; file: string; totalMB: number };
@@ -45,6 +64,8 @@ export function useTts() {
   const [currentTime, setCurrentTime] = useState(0);
   const [speed, setSpeedState] = useState(1);
   const [voice, setVoice] = useState(DEFAULT_VOICE);
+  const [exporting, setExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState<{ done: number; total: number } | null>(null);
 
   useEffect(() => {
     const els: [HTMLAudioElement, HTMLAudioElement] = [new Audio(), new Audio()];
@@ -187,9 +208,21 @@ export function useTts() {
             setError(msg.message);
             setPhase((p) => (p === "loading-model" ? "error" : p));
             setGenerating(false);
+            setExporting(false);
+            setExportProgress(null);
           }
           break;
         }
+        case "export-progress":
+          if (msg.jobId !== jobRef.current) return;
+          setExportProgress({ done: msg.done, total: msg.total });
+          break;
+        case "export-done":
+          if (msg.jobId !== jobRef.current) return;
+          triggerDownload(msg.data, msg.mime, msg.filename);
+          setExporting(false);
+          setExportProgress(null);
+          break;
         case "chunk": {
           if (msg.jobId !== jobRef.current) return;
           const c: Chunk = msg.chunk;
@@ -374,6 +407,36 @@ export function useTts() {
     }
   }, []);
 
+  const cancelExport = useCallback(() => {
+    send({ type: "cancel" }); // bumps the worker's activeJob; the export loop bails
+    setExporting(false);
+    setExportProgress(null);
+  }, []);
+
+  const exportAudio = useCallback(
+    (spoken: string[], voiceId: string, opts: ExportOptions) => {
+      const st = iRef.current;
+      if (!st || phase !== "ready" || spoken.length === 0 || exporting) return;
+      send({ type: "cancel" });
+      st.els.forEach((el) => el.pause());
+      setIsPlaying(false);
+      setExporting(true);
+      setExportProgress({ done: 0, total: spoken.length });
+      const jobId = ++jobRef.current;
+      send({
+        type: "export",
+        jobId,
+        sentences: spoken,
+        voice: voiceId,
+        bitrate: opts.bitrate,
+        mode: opts.mode,
+        sections: opts.sections,
+        docTitle: opts.docTitle,
+      });
+    },
+    [phase, exporting],
+  );
+
   // ---- Media Session ----
   useEffect(() => {
     if (!("mediaSession" in navigator)) return;
@@ -409,9 +472,13 @@ export function useTts() {
     currentTime,
     speed,
     voice,
+    exporting,
+    exportProgress,
     setVoice,
     loadModel,
     speak,
+    exportAudio,
+    cancelExport,
     play,
     pause,
     toggle,

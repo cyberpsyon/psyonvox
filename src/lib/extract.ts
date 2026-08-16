@@ -1,6 +1,8 @@
 import * as pdfjsLib from "pdfjs-dist";
 import type { TextItem } from "pdfjs-dist/types/src/display/api";
 import { marked, type Token } from "marked";
+import mammoth from "mammoth";
+import JSZip from "jszip";
 // Vite resolves the pdf.js worker as a dedicated worker bundle (documented setup).
 import PdfWorker from "pdfjs-dist/build/pdf.worker.mjs?worker";
 
@@ -12,13 +14,18 @@ export type Block = { kind: BlockKind; text: string };
 export type ExtractResult = {
   blocks: Block[];
   text: string; // flattened, for word count / preview / scanned check
-  kind: "pdf" | "markdown" | "text";
+  kind: "pdf" | "markdown" | "text" | "docx" | "pptx" | "epub";
   likelyScanned?: boolean;
 };
+
+export const ACCEPT = ".pdf,.md,.markdown,.txt,.docx,.pptx,.epub";
 
 export async function extractFile(file: File): Promise<ExtractResult> {
   const name = file.name.toLowerCase();
   if (name.endsWith(".pdf")) return extractPdf(file);
+  if (name.endsWith(".docx")) return extractDocx(file);
+  if (name.endsWith(".pptx")) return extractPptx(file);
+  if (name.endsWith(".epub")) return extractEpub(file);
   if (name.endsWith(".md") || name.endsWith(".markdown")) {
     const blocks = markdownBlocks(await file.text());
     return { blocks, text: flatten(blocks), kind: "markdown" };
@@ -26,6 +33,75 @@ export async function extractFile(file: File): Promise<ExtractResult> {
   const blocks = plainBlocks(cleanText(await file.text()));
   return { blocks, text: flatten(blocks), kind: "text" };
 }
+
+// ---------- Word (.docx) ----------
+async function extractDocx(file: File): Promise<ExtractResult> {
+  const { value } = await mammoth.extractRawText({
+    arrayBuffer: await file.arrayBuffer(),
+  });
+  const blocks = plainBlocks(cleanText(value));
+  return { blocks, text: flatten(blocks), kind: "docx" };
+}
+
+// ---------- PowerPoint (.pptx) ----------
+async function extractPptx(file: File): Promise<ExtractResult> {
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const slideNames = Object.keys(zip.files)
+    .filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+    .sort((a, b) => slideNum(a) - slideNum(b));
+  const parser = new DOMParser();
+  const blocks: Block[] = [];
+  for (let i = 0; i < slideNames.length; i++) {
+    const xml = await zip.file(slideNames[i])!.async("string");
+    const doc = parser.parseFromString(xml, "application/xml");
+    const runs = Array.from(doc.getElementsByTagName("a:t"))
+      .map((n) => n.textContent ?? "")
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    blocks.push({ kind: "heading", text: `Slide ${i + 1}` });
+    if (runs) blocks.push({ kind: "text", text: runs });
+  }
+  return { blocks, text: flatten(blocks), kind: "pptx" };
+}
+
+function slideNum(name: string): number {
+  return Number(name.match(/slide(\d+)\.xml$/)?.[1] ?? 0);
+}
+
+// ---------- EPUB ----------
+async function extractEpub(file: File): Promise<ExtractResult> {
+  // epubjs types are loose; treat the module as dynamic.
+  const mod = (await import("epubjs")) as unknown as { default: (input: ArrayBuffer) => EpubBook };
+  const book = mod.default(await file.arrayBuffer());
+  await book.ready;
+  const blocks: Block[] = [];
+  for (const item of book.spine.spineItems) {
+    try {
+      const doc: Document = await item.load(book.load.bind(book));
+      for (const el of Array.from(doc.body?.querySelectorAll("h1,h2,h3,h4,p,li") ?? [])) {
+        const t = (el.textContent ?? "").replace(/\s+/g, " ").trim();
+        if (!t) continue;
+        blocks.push({ kind: /^h[1-4]$/i.test(el.tagName) ? "heading" : "text", text: t });
+      }
+    } catch {
+      // skip an unreadable section rather than fail the whole book
+    } finally {
+      item.unload?.();
+    }
+  }
+  return { blocks, text: flatten(blocks), kind: "epub" };
+}
+
+type EpubBook = {
+  ready: Promise<unknown>;
+  load: (path: string) => unknown;
+  spine: { spineItems: EpubItem[] };
+};
+type EpubItem = {
+  load: (fn: (path: string) => unknown) => Promise<Document>;
+  unload?: () => void;
+};
 
 function flatten(blocks: Block[]): string {
   return blocks.map((b) => b.text).join("\n\n");

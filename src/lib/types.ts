@@ -27,7 +27,19 @@ export type ToWorker =
       /** Generate starting from this index (buffer-ahead / resume). */
       startIndex: number;
     }
+  | {
+      type: "export";
+      jobId: number;
+      sentences: string[];
+      voice: string;
+      bitrate: number; // kbps
+      mode: ExportMode;
+      sections: { startIndex: number; title: string }[];
+      docTitle: string;
+    }
   | { type: "cancel" };
+
+export type ExportMode = "single" | "chapters" | "zip";
 
 // ---- Worker -> Main thread ----
 export type FromWorker =
@@ -35,4 +47,12 @@ export type FromWorker =
   | { type: "ready" }
   | { type: "error"; message: string }
   | { type: "chunk"; jobId: number; chunk: Chunk }
-  | { type: "done"; jobId: number };
+  | { type: "done"; jobId: number }
+  | { type: "export-progress"; jobId: number; done: number; total: number }
+  | {
+      type: "export-done";
+      jobId: number;
+      data: ArrayBuffer;
+      mime: string;
+      filename: string;
+    };
