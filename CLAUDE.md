@@ -30,9 +30,11 @@ These rules persist across all sessions. Follow them without being re-asked.
 
 ## Build phases (from the spec)
 
-1. Core reader (MVP) — **current target**.
-2. Player polish (nav, shortcuts, resume/bookmarks, Media Session, model-download UX).
-3. Text intelligence (shared pronunciation JSON, cleanup, junk-skip, scanned detection).
-4. Study mode. 5. Export + universal formats. 6. Python batch script + ship.
+1. Core reader (MVP) — ✅ done.
+2. Player polish (nav, shortcuts, resume/bookmarks, Media Session, download UX) — ✅ done.
+3. Text intelligence (shared pronunciation JSON, cleanup, junk-skip, scanned detection) — ✅ done.
+4. Study mode — built then **removed at Ben's request** (disliked the UX). Player is linear-only.
+5. Export + universal formats (MP3 single/chapters/ZIP, docx/pptx/epub) — ✅ done.
+6. Python batch script + README + MIT + Netlify config + CI — ✅ done. Netlify deploy + cold-start test are Ben's to run.
 
 When a phase works, stop and check in with Ben before starting the next.

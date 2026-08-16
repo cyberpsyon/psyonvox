@@ -1,0 +1,24 @@
+# Netlify deploy config for the PsyonVox web app (static site).
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# SPA fallback — the app is a single page.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# OPTIONAL performance boost: cross-origin isolation lets onnxruntime-web use
+# multi-threaded WASM (faster on the wasm path). It is commented out because
+# `require-corp` would block the cross-origin Google Fonts <link>. To enable it,
+# self-host the Inter / JetBrains Mono fonts first, then uncomment:
+#
+# [[headers]]
+#   for = "/*"
+#   [headers.values]
+#     Cross-Origin-Opener-Policy = "same-origin"
+#     Cross-Origin-Embedder-Policy = "require-corp"

@@ -11,11 +11,15 @@ dist-ssr/
 # Test outputs
 *.mp3
 
-# Python (batch script, Phase 6)
+# Python (batch script)
 .venv/
 venv/
 __pycache__/
 *.pyc
+
+# Batch output
+psyonvox-out/
+.psyonvox-manifest.json
 
 # Editor / OS
 .DS_Store
