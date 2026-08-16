@@ -50,6 +50,25 @@ export function useTts() {
   const apiRef = useRef<{ goToStep: (p: number) => void }>({ goToStep: () => {} });
   const attemptRef = useRef<EnginePair | null>(null);
   const triedFallbackRef = useRef(false);
+  const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearStallTimer = () => {
+    if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
+    stallTimerRef.current = null;
+  };
+  // If no bytes flow within the window, the fetch is almost certainly blocked
+  // (extension / ad-blocker / VPN / network filter) — say so instead of hanging.
+  const startStallTimer = () => {
+    clearStallTimer();
+    stallTimerRef.current = setTimeout(() => {
+      stallTimerRef.current = null;
+      setDownload(null);
+      setPhase("error");
+      setError(
+        "The voice model didn't start downloading (no data after 30s). Something is blocking it — usually a browser extension (ad-blocker, media/video helper), a VPN, or a network filter. Try an incognito window, whitelist huggingface.co, or clear this site's data, then Load again.",
+      );
+    }, 30_000);
+  };
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -171,6 +190,7 @@ export function useTts() {
       const msg = e.data;
       switch (msg.type) {
         case "download":
+          clearStallTimer(); // bytes are flowing — not blocked
           setDownload({
             progress: msg.progress / 100,
             file: msg.file,
@@ -178,11 +198,13 @@ export function useTts() {
           });
           break;
         case "ready":
+          clearStallTimer();
           attemptRef.current = null;
           setPhase("ready");
           setDownload(null);
           break;
         case "error": {
+          clearStallTimer();
           const attempt = attemptRef.current;
           if (attempt?.device === "webgpu" && !triedFallbackRef.current) {
             triedFallbackRef.current = true;
@@ -198,6 +220,7 @@ export function useTts() {
               file: "",
               totalMB: approxDownloadMB(attemptRef.current),
             });
+            startStallTimer();
             worker.postMessage({
               type: "init",
               modelId: MODEL_ID,
@@ -246,6 +269,7 @@ export function useTts() {
     });
 
     return () => {
+      clearStallTimer();
       worker.terminate();
       els.forEach((el) => el.pause());
       st.urls.forEach((u) => u && URL.revokeObjectURL(u));
@@ -275,6 +299,7 @@ export function useTts() {
     attemptRef.current = pair;
     setPhase("loading-model");
     setDownload({ progress: 0, file: "", totalMB: approxDownloadMB(pair) });
+    startStallTimer();
     send({ type: "init", modelId: MODEL_ID, device: pair.device, dtype: pair.dtype });
   }, []);
 
