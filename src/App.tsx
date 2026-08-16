@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTts } from "./hooks/useTts";
 import { extractFile } from "./lib/extract";
+import { segment } from "./lib/segment";
 import {
   approxDownloadMB,
   probeWebGPU,
@@ -9,6 +10,23 @@ import {
 } from "./lib/device";
 import { Reader } from "./components/Reader";
 import { PlayerBar } from "./components/PlayerBar";
+import {
+  addBookmark,
+  fileIdentity,
+  getProgress,
+  listBookmarks,
+  recentFiles,
+  removeBookmark,
+  saveProgress,
+  type Bookmark,
+  type FileMeta,
+} from "./lib/store";
+
+/** Detect a metered / data-saver connection to warn before a big download. */
+function isMetered(): boolean {
+  const c = (navigator as unknown as { connection?: { saveData?: boolean; effectiveType?: string } }).connection;
+  return !!c && (c.saveData === true || /2g|3g/.test(c.effectiveType ?? ""));
+}
 
 export default function App() {
   const tts = useTts();
@@ -21,6 +39,14 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [webgpu, setWebgpu] = useState(false);
 
+  // persistence
+  const [fileId, setFileId] = useState<string | null>(null);
+  const [fileMeta, setFileMeta] = useState<{ size: number; hash: string } | null>(null);
+  const [resumeInfo, setResumeInfo] = useState<FileMeta | null>(null);
+  const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
+  const [recent, setRecent] = useState<FileMeta[]>([]);
+  const metered = useMemo(() => isMetered(), []);
+
   // Real capability probe — navigator.gpu can exist without a working adapter.
   useEffect(() => {
     let alive = true;
@@ -31,17 +57,38 @@ export default function App() {
   }, []);
 
   const resolved = resolvePair(pref, webgpu);
-  const canPlay = tts.sentences.length > 0;
+  const segments = useMemo(() => segment(docText), [docText]);
+  const canPlay = tts.currentSentence >= 0 || tts.durations.some((d) => d != null);
+  const wordCount = useMemo(
+    () => (docText ? docText.replace(/\s+/g, " ").trim().split(" ").length : 0),
+    [docText],
+  );
+
+  // Load recent-files list on mount.
+  useEffect(() => {
+    void recentFiles().then(setRecent);
+  }, []);
 
   const onFile = useCallback(async (file: File) => {
     setFileError(null);
     setScanned(false);
     setExtracting(true);
     setFileName(file.name);
+    setResumeInfo(null);
+    setBookmarks([]);
     try {
-      const res = await extractFile(file);
+      const [{ fileId: id, hash }, res] = await Promise.all([
+        fileIdentity(file),
+        extractFile(file),
+      ]);
       setDocText(res.text);
+      setFileId(id);
+      setFileMeta({ size: file.size, hash });
       if (res.likelyScanned) setScanned(true);
+      // Prior progress / bookmarks for this exact file.
+      const [progress, bms] = await Promise.all([getProgress(id), listBookmarks(id)]);
+      if (progress && progress.lastIndex > 0) setResumeInfo(progress);
+      setBookmarks(bms);
     } catch (err) {
       setFileError((err as Error).message ?? "Could not read that file.");
       setDocText("");
@@ -49,6 +96,55 @@ export default function App() {
       setExtracting(false);
     }
   }, []);
+
+  // Persist resume position as the active sentence advances (debounced).
+  useEffect(() => {
+    if (!fileId || !fileMeta || tts.currentSentence < 0 || segments.length === 0) return;
+    const t = setTimeout(() => {
+      void saveProgress({
+        fileId,
+        name: fileName,
+        size: fileMeta.size,
+        hash: fileMeta.hash,
+        sentenceCount: segments.length,
+        lastIndex: tts.currentSentence,
+        updatedAt: Date.now(),
+      }).then(() => recentFiles().then(setRecent));
+    }, 800);
+    return () => clearTimeout(t);
+  }, [tts.currentSentence, fileId, fileMeta, fileName, segments.length]);
+
+  // Media Session metadata (title on the lock screen).
+  useEffect(() => {
+    if ("mediaSession" in navigator && fileName) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: fileName,
+        artist: "PsyonVox",
+        album: "Read aloud",
+      });
+    }
+  }, [fileName]);
+
+  const onBookmark = useCallback(async () => {
+    if (!fileId || tts.currentSentence < 0) return;
+    const seg = segments[tts.currentSentence];
+    await addBookmark({
+      fileId,
+      index: tts.currentSentence,
+      label: seg ? seg.text.slice(0, 60) : `Sentence ${tts.currentSentence + 1}`,
+      createdAt: Date.now(),
+    });
+    setBookmarks(await listBookmarks(fileId));
+  }, [fileId, tts.currentSentence, segments]);
+
+  const onRemoveBookmark = useCallback(
+    async (id?: number) => {
+      if (id == null || !fileId) return;
+      await removeBookmark(id);
+      setBookmarks(await listBookmarks(fileId));
+    },
+    [fileId],
+  );
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
@@ -59,27 +155,43 @@ export default function App() {
     [onFile],
   );
 
-  // ---- keyboard shortcuts ----
-  const { toggle, seekToSentence, currentSentence } = tts;
+  // ---- keyboard shortcuts (space, ←/→ sentence, [ / ] section, R rewind) ----
+  const { toggle, nextSentence, prevSentence, jumpSection, rewind } = tts;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement;
       if (el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "TEXTAREA")
         return;
-      if (e.code === "Space") {
-        e.preventDefault();
-        toggle();
-      } else if (e.code === "ArrowRight") {
-        e.preventDefault();
-        seekToSentence(Math.max(0, currentSentence) + 1);
-      } else if (e.code === "ArrowLeft") {
-        e.preventDefault();
-        seekToSentence(Math.max(0, currentSentence - 1));
+      switch (e.code) {
+        case "Space":
+          e.preventDefault();
+          toggle();
+          break;
+        case "ArrowRight":
+          e.preventDefault();
+          nextSentence();
+          break;
+        case "ArrowLeft":
+          e.preventDefault();
+          prevSentence();
+          break;
+        case "BracketRight":
+          e.preventDefault();
+          jumpSection(1);
+          break;
+        case "BracketLeft":
+          e.preventDefault();
+          jumpSection(-1);
+          break;
+        case "KeyR":
+          e.preventDefault();
+          rewind(10);
+          break;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggle, seekToSentence, currentSentence]);
+  }, [toggle, nextSentence, prevSentence, jumpSection, rewind]);
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -115,6 +227,13 @@ export default function App() {
                 ? "WebGPU detected."
                 : "WebGPU not detected — using the wasm path."}
             </p>
+            {metered && (
+              <p className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-400">
+                You appear to be on a metered / data-saver connection. Consider the
+                <span className="font-medium"> wasm lite (q4, ~45 MB)</span> engine
+                below to save data.
+              </p>
+            )}
             <div className="flex flex-wrap items-center gap-3">
               <label className="flex items-center gap-2 text-sm">
                 <span className="text-muted">Engine</span>
@@ -206,31 +325,100 @@ export default function App() {
           {fileError && <p className="mt-3 text-sm text-red-400">{fileError}</p>}
         </section>
 
+        {/* Recent files (resume when reopened — file contents aren't stored) */}
+        {!docText && recent.length > 0 && (
+          <section className="mb-6 rounded-lg border border-border bg-surface/60 p-4">
+            <h3 className="mb-2 font-mono text-xs uppercase tracking-wide text-muted">
+              Recent files
+            </h3>
+            <ul className="flex flex-col gap-1 text-sm">
+              {recent.map((r) => (
+                <li key={r.fileId} className="flex items-center justify-between gap-3">
+                  <span className="truncate text-text/80">{r.name}</span>
+                  <span className="whitespace-nowrap font-mono text-xs text-muted">
+                    sentence {r.lastIndex + 1} / {r.sentenceCount}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-xs text-muted">
+              Reopen a file above to pick up where you left off.
+            </p>
+          </section>
+        )}
+
         {/* Read-aloud trigger */}
         {docText && !scanned && (
-          <div className="mb-4 flex items-center gap-3">
+          <div className="mb-4 flex flex-wrap items-center gap-3">
             <button
-              onClick={() => tts.speak(docText, tts.voice)}
+              onClick={() => tts.speak(segments, tts.voice)}
               disabled={tts.phase !== "ready" || tts.generating}
               className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-bg transition-colors hover:bg-accent-bright disabled:opacity-50"
             >
               {tts.generating ? "Reading…" : "▶ Read aloud"}
             </button>
+            {resumeInfo && tts.phase === "ready" && !tts.generating && (
+              <button
+                onClick={() => tts.speak(segments, tts.voice, resumeInfo.lastIndex)}
+                className="rounded-md border border-accent px-4 py-2 text-sm font-medium text-accent transition-colors hover:bg-accent hover:text-bg"
+              >
+                ⤾ Resume at sentence {resumeInfo.lastIndex + 1}
+              </button>
+            )}
+            <button
+              onClick={() => void onBookmark()}
+              disabled={tts.currentSentence < 0}
+              className="rounded-md border border-border px-3 py-2 text-sm text-muted transition-colors hover:border-accent hover:text-text disabled:opacity-40"
+            >
+              ＋ Bookmark
+            </button>
             {tts.phase !== "ready" && (
               <span className="text-xs text-muted">Load the voice model first.</span>
             )}
             <span className="font-mono text-xs text-muted">
-              {docText.replace(/\s+/g, " ").trim().split(" ").length.toLocaleString()}{" "}
-              words
+              {wordCount.toLocaleString()} words · {segments.length.toLocaleString()}{" "}
+              sentences
             </span>
+          </div>
+        )}
+
+        {/* Bookmarks */}
+        {docText && bookmarks.length > 0 && (
+          <div className="mb-4 rounded-lg border border-border bg-surface/60 p-3">
+            <h3 className="mb-2 font-mono text-xs uppercase tracking-wide text-muted">
+              Bookmarks
+            </h3>
+            <ul className="flex flex-col gap-1">
+              {bookmarks.map((bm) => (
+                <li key={bm.id} className="flex items-center gap-2 text-sm">
+                  <button
+                    onClick={() => tts.seekToSentence(bm.index)}
+                    className="flex-1 truncate text-left text-text/80 hover:text-accent-bright"
+                    title={bm.label}
+                  >
+                    <span className="font-mono text-xs text-muted">
+                      #{bm.index + 1}
+                    </span>{" "}
+                    {bm.label}
+                  </button>
+                  <button
+                    onClick={() => void onRemoveBookmark(bm.id)}
+                    aria-label="Remove bookmark"
+                    className="text-muted hover:text-red-400"
+                  >
+                    ✕
+                  </button>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 
         {/* Reader */}
         <section className="rounded-lg border border-border bg-surface p-5">
           <Reader
-            sentences={tts.sentences}
-            previewText={docText}
+            segments={segments}
+            durations={tts.durations}
             currentSentence={tts.currentSentence}
             currentTime={tts.currentTime}
             onSentenceClick={tts.seekToSentence}
@@ -246,8 +434,11 @@ export default function App() {
         speed={tts.speed}
         voice={tts.voice}
         onToggle={tts.toggle}
-        onPrev={() => tts.seekToSentence(Math.max(0, tts.currentSentence - 1))}
-        onNext={() => tts.seekToSentence(Math.max(0, tts.currentSentence) + 1)}
+        onPrev={tts.prevSentence}
+        onNext={tts.nextSentence}
+        onPrevSection={() => tts.jumpSection(-1)}
+        onNextSection={() => tts.jumpSection(1)}
+        onRewind={() => tts.rewind(10)}
         onSpeed={tts.setSpeed}
         onVoice={tts.setVoice}
       />

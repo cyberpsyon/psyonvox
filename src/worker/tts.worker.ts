@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-import { KokoroTTS, TextSplitterStream } from "kokoro-js";
+import { KokoroTTS } from "kokoro-js";
 import type { FromWorker, ToWorker } from "../lib/types";
 import { encodeWav16 } from "./wav";
 
@@ -51,17 +51,16 @@ async function generate(msg: Extract<ToWorker, { type: "generate" }>) {
     return;
   }
   const myJob = ++activeJob;
-  const splitter = new TextSplitterStream();
-  // Voice id is validated in the UI against the model roster; cast past the
-  // narrow keyof-VOICES literal type.
-  const stream = tts.stream(splitter, { voice: msg.voice as never });
-  splitter.push(msg.text);
-  splitter.close();
-
-  let index = 0;
+  const { sentences, startIndex } = msg;
   try {
-    for await (const { text, audio } of stream) {
+    // One generate() per sentence keeps a stable 1:1 index mapping to the
+    // pre-split display, which powers exact highlighting, resume, and sections.
+    for (let i = startIndex; i < sentences.length; i++) {
       if (myJob !== activeJob) return; // cancelled / superseded
+      const text = sentences[i];
+      // Voice id is validated in the UI; cast past the narrow keyof-VOICES type.
+      const audio = await tts.generate(text, { voice: msg.voice as never });
+      if (myJob !== activeJob) return;
       if (!audio.audio || audio.audio.length === 0) continue; // skip empty clips
       // Re-encode to 16-bit PCM (see wav.ts) — kokoro's float WAV is unreliable
       // in the browser <audio> element.
@@ -71,7 +70,7 @@ async function generate(msg: Extract<ToWorker, { type: "generate" }>) {
         {
           type: "chunk",
           jobId: msg.jobId,
-          chunk: { index: index++, text, wav, duration },
+          chunk: { index: i, text, wav, duration },
         },
         [wav],
       );

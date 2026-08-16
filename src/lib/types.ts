@@ -21,8 +21,11 @@ export type ToWorker =
   | {
       type: "generate";
       jobId: number;
-      text: string;
+      /** Pre-split sentences; chunk[i] maps 1:1 to sentences[i]. */
+      sentences: string[];
       voice: string;
+      /** Generate starting from this index (buffer-ahead / resume). */
+      startIndex: number;
     }
   | { type: "cancel" };
 
