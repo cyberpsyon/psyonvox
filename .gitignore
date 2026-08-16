@@ -1,0 +1,25 @@
+# Spec stays local — never commit
+docs/BUILD-SPEC.md
+
+# Dependencies / build output
+node_modules/
+dist/
+dist-ssr/
+*.local
+*.tsbuildinfo
+
+# Test outputs
+*.mp3
+
+# Python (batch script, Phase 6)
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Editor / OS
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.log
