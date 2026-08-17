@@ -23,12 +23,27 @@ export function Reader({
 }) {
   const activeRef = useRef<HTMLElement | null>(null);
 
+  // Follow playback, but don't yank the page around: only scroll when the
+  // active sentence has actually left the comfortable reading band, and honor
+  // reduced-motion preferences.
   useEffect(() => {
-    activeRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+    const el = activeRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const vh = window.innerHeight;
+    const inBand = r.top >= vh * 0.15 && r.bottom <= vh * 0.85;
+    if (inBand) return;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    el.scrollIntoView({ block: "center", behavior: reduceMotion ? "auto" : "smooth" });
   }, [currentSentence]);
 
   if (segments.length === 0) {
-    return <p className="text-muted">Load a PDF or Markdown file to see its text here.</p>;
+    return (
+      <p className="text-muted">
+        Load a document (PDF, Word, PowerPoint, EPUB, Markdown, or plain text) to
+        see its text here.
+      </p>
+    );
   }
 
   // Build render groups: headings / code / table stand alone; runs of text

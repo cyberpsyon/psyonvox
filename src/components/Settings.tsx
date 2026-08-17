@@ -62,6 +62,7 @@ export function Settings({
     <section className="mb-6 rounded-lg border border-border bg-surface">
       <button
         onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
         className="flex w-full items-center justify-between px-4 py-3 text-sm font-semibold"
       >
         <span>Settings — pronunciation &amp; reading</span>

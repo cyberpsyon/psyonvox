@@ -227,14 +227,28 @@ export default function App() {
     });
   }, []);
 
+  const [dragOver, setDragOver] = useState(false);
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
+      setDragOver(false);
       const f = e.dataTransfer.files?.[0];
       if (f) void onFile(f);
     },
     [onFile],
   );
+
+  // A file dropped outside the dropzone would otherwise navigate the tab away
+  // and lose all app state — swallow drops everywhere else.
+  useEffect(() => {
+    const prevent = (e: DragEvent) => e.preventDefault();
+    window.addEventListener("dragover", prevent);
+    window.addEventListener("drop", prevent);
+    return () => {
+      window.removeEventListener("dragover", prevent);
+      window.removeEventListener("drop", prevent);
+    };
+  }, []);
 
   // ---- keyboard shortcuts (space, ←/→ sentence, [ / ] section, R rewind) ----
   const { toggle, nextSentence, prevSentence, jumpSection, rewind } = tts;
@@ -347,7 +361,14 @@ export default function App() {
                   </span>
                   <span>{Math.round(tts.download.progress * 100)}%</span>
                 </div>
-                <div className="h-2 overflow-hidden rounded-full bg-bg">
+                <div
+                  role="progressbar"
+                  aria-label="Model download progress"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(tts.download.progress * 100)}
+                  className="h-2 overflow-hidden rounded-full bg-bg"
+                >
                   <div
                     className="h-full rounded-full bg-accent transition-[width] duration-200"
                     style={{ width: `${Math.round(tts.download.progress * 100)}%` }}
@@ -367,8 +388,20 @@ export default function App() {
         {/* File input */}
         <section
           onDrop={onDrop}
-          onDragOver={(e) => e.preventDefault()}
-          className="mb-6 rounded-lg border border-dashed border-border bg-surface/40 p-6 text-center"
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragOver(true);
+          }}
+          onDragLeave={(e) => {
+            // Ignore leave events fired when moving over child elements.
+            if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false);
+          }}
+          onClick={() => fileInputRef.current?.click()}
+          className={`mb-6 cursor-pointer rounded-lg border border-dashed p-6 text-center transition-colors ${
+            dragOver
+              ? "border-accent bg-accent/10"
+              : "border-border bg-surface/40 hover:border-accent/50"
+          }`}
         >
           <input
             ref={fileInputRef}
@@ -384,7 +417,10 @@ export default function App() {
             Drop a document here to read it aloud
           </p>
           <button
-            onClick={() => fileInputRef.current?.click()}
+            onClick={(e) => {
+              e.stopPropagation();
+              fileInputRef.current?.click();
+            }}
             className="rounded-md border border-accent px-4 py-2 text-sm font-medium text-accent transition-colors hover:bg-accent hover:text-bg"
           >
             Choose a file
@@ -425,7 +461,8 @@ export default function App() {
               ))}
             </ul>
             <p className="mt-2 text-xs text-muted">
-              Reopen a file above to pick up where you left off.
+              Choose or drop the same file again to pick up where you left off —
+              file contents are never stored.
             </p>
           </section>
         )}
@@ -558,7 +595,16 @@ export default function App() {
                     %
                   </span>
                 </div>
-                <div className="h-2 overflow-hidden rounded-full bg-bg">
+                <div
+                  role="progressbar"
+                  aria-label="Export progress"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(
+                    (tts.exportProgress.done / Math.max(1, tts.exportProgress.total)) * 100,
+                  )}
+                  className="h-2 overflow-hidden rounded-full bg-bg"
+                >
                   <div
                     className="h-full rounded-full bg-accent transition-[width] duration-200"
                     style={{
@@ -632,6 +678,8 @@ export default function App() {
         canPlay={canPlay}
         speed={tts.speed}
         voice={tts.voice}
+        currentSentence={tts.currentSentence}
+        total={segments.length}
         onToggle={tts.toggle}
         onPrev={tts.prevSentence}
         onNext={tts.nextSentence}

@@ -26,6 +26,8 @@ export function PlayerBar({
   canPlay,
   speed,
   voice,
+  currentSentence,
+  total,
   onToggle,
   onPrev,
   onNext,
@@ -41,6 +43,8 @@ export function PlayerBar({
   canPlay: boolean;
   speed: number;
   voice: string;
+  currentSentence: number;
+  total: number;
   onToggle: () => void;
   onPrev: () => void;
   onNext: () => void;
@@ -50,8 +54,27 @@ export function PlayerBar({
   onSpeed: (x: number) => void;
   onVoice: (id: string) => void;
 }) {
+  const pct =
+    total > 0 && currentSentence >= 0
+      ? Math.round(((currentSentence + 1) / total) * 100)
+      : 0;
   return (
     <div className="sticky bottom-0 z-10 border-t border-border bg-surface/95 backdrop-blur">
+      {total > 0 && (
+        <div
+          role="progressbar"
+          aria-label="Document progress"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={pct}
+          className="h-0.5 w-full bg-bg"
+        >
+          <div
+            className="h-full bg-accent transition-[width] duration-300"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
       <div className="mx-auto flex max-w-4xl flex-wrap items-center gap-4 px-4 py-3">
         <div className="flex items-center gap-1">
           <button
@@ -128,16 +151,23 @@ export function PlayerBar({
 
         <VoicePicker value={voice} onChange={onVoice} />
 
-        <div className="w-full font-mono text-xs text-muted sm:w-auto">
-          {generating
-            ? "generating…"
-            : buffering
-              ? "buffering…"
-              : isPlaying
-                ? "playing"
-                : canPlay
-                  ? "paused"
-                  : "idle"}
+        <div className="flex w-full items-center gap-3 font-mono text-xs text-muted sm:w-auto">
+          {total > 0 && currentSentence >= 0 && (
+            <span className="whitespace-nowrap">
+              {(currentSentence + 1).toLocaleString()} / {total.toLocaleString()}
+            </span>
+          )}
+          <span aria-live="polite">
+            {generating
+              ? "generating…"
+              : buffering
+                ? "buffering…"
+                : isPlaying
+                  ? "playing"
+                  : canPlay
+                    ? "paused"
+                    : "idle"}
+          </span>
         </div>
       </div>
     </div>

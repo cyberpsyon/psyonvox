@@ -48,6 +48,13 @@ input[type="range"]::-moz-range-thumb {
   border: 2px solid #0a1220;
 }
 
+/* Visible keyboard focus without disturbing mouse users */
+:focus-visible {
+  outline: 2px solid #25c2a0;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     animation-duration: 0.001ms !important;
