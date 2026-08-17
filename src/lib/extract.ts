@@ -1,12 +1,23 @@
-import * as pdfjsLib from "pdfjs-dist";
 import type { TextItem } from "pdfjs-dist/types/src/display/api";
-import { marked, type Token } from "marked";
-import mammoth from "mammoth";
-import JSZip from "jszip";
-// Vite resolves the pdf.js worker as a dedicated worker bundle (documented setup).
-import PdfWorker from "pdfjs-dist/build/pdf.worker.mjs?worker";
+import type { Token } from "marked";
 
-pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker();
+// Format libraries are dynamically imported so each one downloads only when a
+// file of that type is actually opened — keeps the initial bundle small.
+let pdfjsPromise: Promise<typeof import("pdfjs-dist")> | null = null;
+function loadPdfjs() {
+  if (!pdfjsPromise) {
+    pdfjsPromise = (async () => {
+      const [pdfjs, workerMod] = await Promise.all([
+        import("pdfjs-dist"),
+        // Vite resolves the pdf.js worker as a dedicated worker bundle.
+        import("pdfjs-dist/build/pdf.worker.mjs?worker"),
+      ]);
+      pdfjs.GlobalWorkerOptions.workerPort = new workerMod.default();
+      return pdfjs;
+    })();
+  }
+  return pdfjsPromise;
+}
 
 export type BlockKind = "heading" | "text" | "code" | "table";
 export type Block = { kind: BlockKind; text: string };
@@ -27,7 +38,7 @@ export async function extractFile(file: File): Promise<ExtractResult> {
   if (name.endsWith(".pptx")) return extractPptx(file);
   if (name.endsWith(".epub")) return extractEpub(file);
   if (name.endsWith(".md") || name.endsWith(".markdown")) {
-    const blocks = markdownBlocks(await file.text());
+    const blocks = await markdownBlocks(await file.text());
     return { blocks, text: flatten(blocks), kind: "markdown" };
   }
   const blocks = plainBlocks(cleanText(await file.text()));
@@ -36,6 +47,7 @@ export async function extractFile(file: File): Promise<ExtractResult> {
 
 // ---------- Word (.docx) ----------
 async function extractDocx(file: File): Promise<ExtractResult> {
+  const mammoth = (await import("mammoth")).default;
   const { value } = await mammoth.extractRawText({
     arrayBuffer: await file.arrayBuffer(),
   });
@@ -45,6 +57,7 @@ async function extractDocx(file: File): Promise<ExtractResult> {
 
 // ---------- PowerPoint (.pptx) ----------
 async function extractPptx(file: File): Promise<ExtractResult> {
+  const JSZip = (await import("jszip")).default;
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
   const slideNames = Object.keys(zip.files)
     .filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
@@ -108,7 +121,8 @@ function flatten(blocks: Block[]): string {
 }
 
 // ---------- Markdown: use the real token structure ----------
-function markdownBlocks(md: string): Block[] {
+async function markdownBlocks(md: string): Promise<Block[]> {
+  const { marked } = await import("marked");
   const tokens = marked.lexer(md);
   const blocks: Block[] = [];
   const walk = (toks: Token[]) => {
@@ -178,6 +192,7 @@ function looksLikeHeading(line: string): boolean {
 
 // ---------- PDF ----------
 async function extractPdf(file: File): Promise<ExtractResult> {
+  const pdfjsLib = await loadPdfjs();
   const data = await file.arrayBuffer();
   const doc = await pdfjsLib.getDocument({ data }).promise;
   const pageTexts: string[] = [];

@@ -8,6 +8,9 @@ function Icon({ path }: { path: string }) {
   );
 }
 
+const SPEED_PRESETS = [1, 1.25, 1.5, 2] as const;
+const formatSpeed = (s: number) => (Number.isInteger(s) ? String(s) : s.toFixed(2).replace(/0$/, ""));
+
 const ICONS = {
   play: "M8 5v14l11-7z",
   pause: "M6 5h4v14H6zM14 5h4v14h-4z",
@@ -133,20 +136,39 @@ export function PlayerBar({
           </button>
         </div>
 
-        <div className="flex min-w-[180px] flex-1 items-center gap-3">
-          <span className="w-10 font-mono text-xs text-muted">
-            {speed.toFixed(2)}×
-          </span>
-          <input
-            type="range"
-            min={0.5}
-            max={2}
-            step={0.05}
-            value={speed}
-            onChange={(e) => onSpeed(Number(e.target.value))}
-            className="flex-1"
-            aria-label="Playback speed"
-          />
+        <div className="flex min-w-[220px] flex-1 flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1" role="group" aria-label="Playback speed presets">
+            {SPEED_PRESETS.map((s) => (
+              <button
+                key={s}
+                onClick={() => onSpeed(s)}
+                aria-pressed={Math.abs(speed - s) < 0.001}
+                className={`rounded-md px-2 py-1 font-mono text-xs transition-colors ${
+                  Math.abs(speed - s) < 0.001
+                    ? "bg-accent/15 text-accent-bright"
+                    : "text-muted hover:bg-bg hover:text-text"
+                }`}
+              >
+                {formatSpeed(s)}×
+              </button>
+            ))}
+          </div>
+          <div className="flex min-w-[120px] flex-1 items-center gap-2">
+            <input
+              type="range"
+              min={0.5}
+              max={2}
+              step={0.05}
+              value={speed}
+              onChange={(e) => onSpeed(Number(e.target.value))}
+              className="flex-1"
+              aria-label="Playback speed (fine adjust)"
+              title="Fine-adjust speed"
+            />
+            <span className="w-12 text-right font-mono text-xs text-muted">
+              {speed.toFixed(2)}×
+            </span>
+          </div>
         </div>
 
         <VoicePicker value={voice} onChange={onVoice} />
