@@ -7,7 +7,7 @@ free, private (your files never leave your device), and shareable as a static
 site. A companion **Python batch script** converts whole folders to MP3 locally
 at full speed.
 
-Built by [CyberPsyon](https://cyberpsyon.com). Live demo: _voice.cyberpsyon.com_ (coming soon).
+Built by [CyberPsyon](https://cyberpsyon.com). **Try it live: [voice.cyberpsyon.com](https://voice.cyberpsyon.com)**
 
 ## Features
 
